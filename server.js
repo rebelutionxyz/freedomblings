@@ -240,7 +240,7 @@ async function matchOrders(newOrder, bee, mintPrice) {
 
 // ── SERVE UI — must be last ──────────────────────
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'FreedomBLiNGs_v2.html'));
+  res.sendFile(path.join(__dirname, 'FreedomBLiNGs_v3.html'));
 });
 
 const PORT = process.env.PORT || 3000;
