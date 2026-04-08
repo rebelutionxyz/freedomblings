@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!--
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║          FreedomBLiNGs_v2.html  ·  SESSION LOCK  ·  April 7, 2026          ║
+║          FreedomBLiNGs_v3.html  ·  SESSION LOCK  ·  April 8, 2026          ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  LOCKED SPEC — DO NOT MODIFY WITHOUT VERSION BUMP                           ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
@@ -2467,7 +2467,7 @@ const ACTIVITY_DATA = [
 // Sellers cannot list ABOVE the mint price — why pay a premium for peer BLiNG!
 // when you can mint new BLiNG! from the curve at that price?
 // Mint price = $1.001 (near floor, minimal supply sold).
-const MINT_CEILING_PRICE = 1.001; // BLiNG! per BLiNG! (peer trade max ask)
+let MINT_CEILING_PRICE = 1.001; // BLiNG! per BLiNG! (peer trade max ask)
 
 const OB_DATA = {
   asks: [
