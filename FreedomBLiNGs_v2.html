@@ -1559,9 +1559,13 @@ input, select, textarea {
   </div>
 
   <div class="nav-right">
-    <div class="nav-pill pill-bling">⬡ <span id="nav-bling">4,820</span> BLiNG!</div>
-    <div class="nav-badge badge-rank" id="nav-rank">Steward ★ <span style="opacity:0.6;font-size:0.55rem;">1.5×</span></div>
-    <div class="nav-badge badge-ring" id="nav-ring">Scout ⬡ <span style="opacity:0.6;font-size:0.55rem;">R3</span></div>
+    <div class="nav-pill pill-bling" id="nav-balance-pill" style="display:none;">⬡ <span id="nav-bling">0</span> BLiNG!</div>
+    <div class="nav-badge badge-rank" id="nav-rank" style="display:none;">New Bee</div>
+    <div class="nav-badge badge-ring" id="nav-ring" style="display:none;">New Bee ⬡</div>
+    <div id="nav-bee-id" style="font-family:var(--font-mono);font-size:0.72rem;color:var(--gold);display:none;"></div>
+    <button class="btn btn-gold btn-sm" id="nav-login-btn" onclick="showAuthModal('login')" style="font-size:0.72rem;padding:5px 14px;">Sign In</button>
+    <button class="btn btn-outline-gold btn-sm" id="nav-signup-btn" onclick="showAuthModal('signup')" style="font-size:0.72rem;padding:5px 14px;">Join</button>
+    <button class="btn btn-ghost btn-sm" id="nav-logout-btn" onclick="logout()" style="font-size:0.72rem;padding:5px 14px;display:none;">Sign Out</button>
   </div>
 </nav>
 
@@ -2984,6 +2988,324 @@ renderRankGrid();
 
 // Live tick every 2.5s
 setInterval(tickOrderBook, 2500);
+
+
+// ═══════════════════════════════════════════════
+// API CONFIG — points to your live Railway server
+// ═══════════════════════════════════════════════
+const API_BASE = window.location.origin; // uses same domain
+
+// ═══════════════════════════════════════════════
+// AUTH STATE
+// ═══════════════════════════════════════════════
+let authToken = localStorage.getItem('fb_token') || null;
+let currentBee = JSON.parse(localStorage.getItem('fb_bee') || 'null');
+
+function setAuth(token, bee) {
+  authToken = token;
+  currentBee = bee;
+  localStorage.setItem('fb_token', token);
+  localStorage.setItem('fb_bee', JSON.stringify(bee));
+  updateAuthUI();
+}
+
+function clearAuth() {
+  authToken = null;
+  currentBee = null;
+  localStorage.removeItem('fb_token');
+  localStorage.removeItem('fb_bee');
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  const loggedIn = !!authToken && !!currentBee;
+  document.getElementById('nav-login-btn').style.display  = loggedIn ? 'none' : 'inline-flex';
+  document.getElementById('nav-signup-btn').style.display = loggedIn ? 'none' : 'inline-flex';
+  document.getElementById('nav-logout-btn').style.display = loggedIn ? 'inline-flex' : 'none';
+  document.getElementById('nav-balance-pill').style.display = loggedIn ? 'flex' : 'none';
+  document.getElementById('nav-rank').style.display  = loggedIn ? 'flex' : 'none';
+  document.getElementById('nav-ring').style.display  = loggedIn ? 'flex' : 'none';
+  document.getElementById('nav-bee-id').style.display = loggedIn ? 'block' : 'none';
+  if (loggedIn) {
+    document.getElementById('nav-bee-id').textContent = '@' + currentBee.bee_id;
+    fbState.bling = parseFloat(currentBee.bling_balance) || 0;
+    fbState.hiveActions = currentBee.hive_actions || 0;
+    updateBalDisplay();
+    loadLiveData();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// LIVE DATA
+// ═══════════════════════════════════════════════
+async function loadLiveData() {
+  if (!authToken) return;
+  try {
+    // Load balance
+    const res = await fetch(API_BASE + '/api/balance', {
+      headers: { 'Authorization': 'Bearer ' + authToken }
+    });
+    const data = await res.json();
+    if (data.bee) {
+      currentBee = data.bee;
+      localStorage.setItem('fb_bee', JSON.stringify(data.bee));
+      fbState.bling = parseFloat(data.bee.bling_balance) || 0;
+      fbState.hiveActions = data.bee.hive_actions || 0;
+      MINT_CEILING_PRICE = parseFloat(data.mint_price) || 1.001;
+      updateBalDisplay();
+    }
+    // Load transactions
+    const txRes = await fetch(API_BASE + '/api/transactions', {
+      headers: { 'Authorization': 'Bearer ' + authToken }
+    });
+    const txData = await txRes.json();
+    if (txData.transactions) {
+      renderLiveActivity(txData.transactions);
+    }
+    // Load order book
+    loadLiveOrderBook();
+  } catch(e) {
+    console.error('Live data error:', e);
+  }
+}
+
+async function loadLiveOrderBook() {
+  try {
+    const res = await fetch(API_BASE + '/api/orders');
+    const data = await res.json();
+    if (data.asks || data.bids) {
+      OB_DATA.asks = data.asks.map(o => ({ price: parseFloat(o.price), size: parseFloat(o.amount) }));
+      OB_DATA.bids = data.bids.map(o => ({ price: parseFloat(o.price), size: parseFloat(o.amount) }));
+      if (data.mint_price) MINT_CEILING_PRICE = parseFloat(data.mint_price);
+      renderOrderBook();
+    }
+  } catch(e) { console.error('Order book error:', e); }
+}
+
+function renderLiveActivity(txns) {
+  const feed = document.getElementById('activity-feed');
+  if (!feed || !txns.length) return;
+  const iconMap = { sent:'↑', received:'⬡', bought:'▲', sold:'▼', earned:'◆' };
+  const bgMap  = { sent:'rgba(231,76,60,0.12)', received:'rgba(245,200,66,0.12)', bought:'rgba(46,204,113,0.12)', sold:'rgba(231,76,60,0.12)', earned:'rgba(46,204,113,0.1)' };
+  const clsMap = { sent:'text-red', received:'text-green', bought:'text-green', sold:'text-red', earned:'text-green' };
+  feed.innerHTML = txns.map(t => {
+    const icon = iconMap[t.type] || '⬡';
+    const bg   = bgMap[t.type]  || 'rgba(245,200,66,0.1)';
+    const cls  = clsMap[t.type] || 'text-gold';
+    const amt  = (t.amount > 0 ? '+' : '') + fmtBling(parseFloat(t.amount)) + ' ⬡';
+    const meta = (t.counterparty ? '@' + t.counterparty : t.type) + ' · ' + new Date(t.created_at).toLocaleDateString();
+    return `<div class="activity-item">
+      <div class="activity-icon" style="background:${bg}">${icon}</div>
+      <div class="activity-body">
+        <div class="activity-title">${t.type.charAt(0).toUpperCase()+t.type.slice(1)}</div>
+        <div class="activity-meta">${meta}</div>
+      </div>
+      <div class="activity-amount ${cls}">${amt}</div>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════
+// OVERRIDE doSend TO USE REAL API
+// ═══════════════════════════════════════════════
+async function doSend() {
+  if (!authToken) { showAuthModal('login'); return; }
+  const to   = document.getElementById('send-to').value.trim();
+  const amt  = parseFloat(document.getElementById('send-amount').value) || 0;
+  const memo = document.getElementById('send-memo').value.trim();
+  if (!to)  { fbToast('Enter a recipient Bee.', '⚠'); return; }
+  if (!amt) { fbToast('Enter an amount.', '⚠'); return; }
+
+  try {
+    const res = await fetch(API_BASE + '/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ to_bee_id: to, amount: amt, memo })
+    });
+    const data = await res.json();
+    if (data.error) { fbToast(data.error, '✕'); return; }
+    fbToast(`Sent ${fmtBling(amt)} BLiNG! to @${to} · Fee: Zero ✓`, '⬡');
+    document.getElementById('send-to').value = '';
+    document.getElementById('send-amount').value = '';
+    document.getElementById('send-memo').value = '';
+    fbState.bling = parseFloat(data.new_balance);
+    updateBalDisplay();
+    loadLiveData();
+  } catch(e) { fbToast('Send failed. Try again.', '✕'); }
+}
+
+// ═══════════════════════════════════════════════
+// OVERRIDE placeOrder TO USE REAL API
+// ═══════════════════════════════════════════════
+async function placeOrder() {
+  if (!authToken) { showAuthModal('login'); return; }
+  const size  = parseFloat(document.getElementById('order-size').value) || 0;
+  const price = parseFloat(document.getElementById('order-price').value) || MINT_CEILING_PRICE;
+  const side  = fbState.orderSide;
+  if (!size) { fbToast('Enter an amount to buy or sell.', '⚠'); return; }
+  if (side === 'sell' && price > MINT_CEILING_PRICE) {
+    fbToast(`Max sell price is mint ceiling: ${MINT_CEILING_PRICE.toFixed(3)} ⬡`, '⚠');
+    return;
+  }
+  try {
+    const res = await fetch(API_BASE + '/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ side, price, amount: size })
+    });
+    const data = await res.json();
+    if (data.error) { fbToast(data.error, '✕'); return; }
+    const isMarket = price >= MINT_CEILING_PRICE - 0.0005;
+    fbToast(`${isMarket ? 'Market' : 'Limit'} ${side} placed: ${fmtBling(size)} BLiNG! @ ${price.toFixed(3)} ⬡`, side === 'buy' ? '▲' : '▼');
+    document.getElementById('order-size').value = '';
+    document.getElementById('order-price').value = MINT_CEILING_PRICE.toFixed(3);
+    document.getElementById('order-cost-display').textContent = '—';
+    loadLiveData();
+    setTimeout(loadLiveOrderBook, 1000);
+  } catch(e) { fbToast('Order failed. Try again.', '✕'); }
+}
+
+// ═══════════════════════════════════════════════
+// LOGOUT
+// ═══════════════════════════════════════════════
+function logout() {
+  clearAuth();
+  fbState.bling = 0;
+  fbState.hiveActions = 0;
+  updateBalDisplay();
+  fbToast('Signed out. See you soon, Bee. 🐝', '⬡');
+}
+
+// ═══════════════════════════════════════════════
+// AUTH MODAL
+// ═══════════════════════════════════════════════
+function showAuthModal(mode) {
+  document.getElementById('auth-modal').style.display = 'flex';
+  setAuthMode(mode);
+}
+
+function hideAuthModal() {
+  document.getElementById('auth-modal').style.display = 'none';
+  document.getElementById('auth-error').textContent = '';
+}
+
+function setAuthMode(mode) {
+  const isLogin = mode === 'login';
+  document.getElementById('auth-title').textContent    = isLogin ? 'Sign In' : 'Join FreedomBLiNGs';
+  document.getElementById('auth-submit').textContent   = isLogin ? 'Sign In' : 'Create Account';
+  document.getElementById('auth-switch-text').textContent = isLogin ? "Don't have an account? " : 'Already a Bee? ';
+  document.getElementById('auth-switch-link').textContent = isLogin ? 'Join now' : 'Sign in';
+  document.getElementById('auth-switch-link').onclick  = () => setAuthMode(isLogin ? 'signup' : 'login');
+  document.getElementById('auth-bee-id-field').style.display = isLogin ? 'none' : 'block';
+  document.getElementById('auth-modal').dataset.mode   = mode;
+}
+
+async function submitAuth() {
+  const mode     = document.getElementById('auth-modal').dataset.mode;
+  const email    = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const bee_id   = document.getElementById('auth-bee-id').value.trim().toLowerCase();
+  const errEl    = document.getElementById('auth-error');
+  const btn      = document.getElementById('auth-submit');
+
+  if (!email || !password) { errEl.textContent = 'Email and password required.'; return; }
+  if (mode === 'signup' && !bee_id) { errEl.textContent = 'Choose a Bee ID.'; return; }
+  if (mode === 'signup' && !/^[a-z0-9_]{3,20}$/.test(bee_id)) {
+    errEl.textContent = 'Bee ID: 3–20 characters, letters/numbers/underscores only.'; return;
+  }
+
+  btn.textContent = 'Working...';
+  btn.disabled = true;
+  errEl.textContent = '';
+
+  try {
+    const endpoint = mode === 'signup' ? '/api/signup' : '/api/login';
+    const body     = mode === 'signup' ? { email, password, bee_id } : { email, password };
+    const res  = await fetch(API_BASE + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.error) { errEl.textContent = data.error; btn.textContent = mode === 'signup' ? 'Create Account' : 'Sign In'; btn.disabled = false; return; }
+
+    if (mode === 'signup') {
+      // Auto-login after signup
+      const loginRes = await fetch(API_BASE + '/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const loginData = await loginRes.json();
+      if (loginData.token) {
+        setAuth(loginData.token, loginData.bee);
+        hideAuthModal();
+        fbToast('Welcome to FreedomBLiNGs, @' + loginData.bee.bee_id + '! 🐝', '⬡');
+      }
+    } else {
+      setAuth(data.token, data.bee);
+      hideAuthModal();
+      fbToast('Welcome back, @' + data.bee.bee_id + '! 🐝', '⬡');
+    }
+  } catch(e) {
+    errEl.textContent = 'Connection error. Try again.';
+    btn.textContent = mode === 'signup' ? 'Create Account' : 'Sign In';
+    btn.disabled = false;
+  }
+}
+
+// On page load — restore session if token exists
+if (authToken && currentBee) {
+  updateAuthUI();
+} else {
+  // Show login prompt after 1.5s if not logged in
+  setTimeout(() => {
+    if (!authToken) showAuthModal('login');
+  }, 1500);
+}
+
+// Refresh live data every 30s
+setInterval(() => { if (authToken) loadLiveData(); }, 30000);
+// Refresh order book every 5s
+setInterval(() => { loadLiveOrderBook(); }, 5000);
+
 </script>
+
+<!-- AUTH MODAL -->
+<div id="auth-modal" style="display:none;position:fixed;inset:0;background:rgba(26,10,0,0.85);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:var(--amber-dark);border:1px solid rgba(245,200,66,0.25);border-radius:var(--radius);padding:36px;width:100%;max-width:420px;margin:16px;position:relative;">
+    <button onclick="hideAuthModal()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--text-cream-dim);font-size:1.2rem;cursor:pointer;line-height:1;">✕</button>
+
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="font-family:var(--font-display);font-size:2rem;color:var(--gold);margin-bottom:4px;">⬡</div>
+      <div id="auth-title" style="font-family:var(--font-display);font-size:1.6rem;font-weight:700;color:var(--cream);">Sign In</div>
+    </div>
+
+    <div class="field-group">
+      <label class="field-label light">Email</label>
+      <input type="email" class="input-dark" id="auth-email" placeholder="your@email.com" onkeydown="if(event.key==='Enter')submitAuth()">
+    </div>
+
+    <div class="field-group">
+      <label class="field-label light">Password</label>
+      <input type="password" class="input-dark" id="auth-password" placeholder="••••••••" onkeydown="if(event.key==='Enter')submitAuth()">
+    </div>
+
+    <div class="field-group" id="auth-bee-id-field" style="display:none;">
+      <label class="field-label light">Bee ID <span style="opacity:0.5;font-size:0.7rem;text-transform:none;letter-spacing:0;">(your @username — cannot be changed)</span></label>
+      <input type="text" class="input-dark" id="auth-bee-id" placeholder="your_bee_id" maxlength="20" onkeydown="if(event.key==='Enter')submitAuth()">
+    </div>
+
+    <div id="auth-error" style="font-size:0.78rem;color:var(--red-neg);margin-bottom:12px;min-height:18px;"></div>
+
+    <button id="auth-submit" class="btn btn-gold btn-full" onclick="submitAuth()">Sign In</button>
+
+    <div style="text-align:center;margin-top:16px;font-size:0.78rem;color:var(--text-cream-dim);">
+      <span id="auth-switch-text">Don't have an account? </span>
+      <a id="auth-switch-link" href="#" onclick="setAuthMode('signup');return false;" style="color:var(--gold);text-decoration:none;font-weight:600;">Join now</a>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
