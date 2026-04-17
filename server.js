@@ -29,18 +29,9 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
       .from('bees').select('*').eq('bee_id', bee_id).single();
 
     if (bee) {
-      const newBalance = parseFloat(bee.bling_balance) + bling;
-      await supabaseAdmin.from('bees')
-        .update({ bling_balance: newBalance }).eq('bee_id', bee_id);
-
-      await supabaseAdmin.from('transactions').insert({
-        bee_id: bee.id,
-        type: 'bought',
-        amount: bling,
-        memo: `Bought ${bling} BLiNG! via Stripe · $${(bling * 1).toFixed(2)} USD`
-      });
-
-      console.log(`Credited ${bling} BLiNG! to @${bee_id}`);
+      // Use mint function — fills from sell orders first, then mints from curve
+      await mintBling(bee, bling, 1.001);
+      console.log(`Minted/credited ${bling} BLiNG! to @${bee_id} via Stripe`);
     }
   }
 
@@ -317,6 +308,128 @@ app.post('/api/stripe/create-checkout', async (req, res) => {
   });
 
   res.json({ url: session.url });
+});
+
+// ── MINT BLiNG! FROM BONDING CURVE ─────────────────
+// Called when a buy order has no matching sell orders
+// Mints new BLiNG! at current curve price, credits buyer, updates mint_price
+async function mintBling(bee, amount, mintPrice) {
+  const CURVE_INCREMENT = 0.01;  // $0.01 per billion sold
+  const CURVE_CEILING   = 101;
+  const BLING_CAP       = 11222333222111;
+
+  // Get current total supply from system_state
+  const { data: supplyData } = await supabaseAdmin
+    .from('system_state').select('value').eq('key', 'total_supply').single();
+  const currentSupply = parseFloat(supplyData?.value || 0);
+
+  if (currentSupply + amount > BLING_CAP)
+    return { error: 'BLiNG! hard cap reached' };
+
+  const newSupply   = currentSupply + amount;
+  const newMintPrice = Math.min(
+    CURVE_CEILING,
+    1 + CURVE_INCREMENT * Math.floor(newSupply / 1e9)
+  );
+
+  // Credit BLiNG! to buyer
+  const newBalance = parseFloat(bee.bling_balance) + amount;
+  await supabaseAdmin.from('bees')
+    .update({ bling_balance: newBalance }).eq('id', bee.id);
+
+  // Update system state
+  await supabaseAdmin.from('system_state')
+    .upsert([
+      { key: 'total_supply', value: newSupply.toString() },
+      { key: 'mint_price',   value: newMintPrice.toString() }
+    ], { onConflict: 'key' });
+
+  // Record transaction
+  await supabaseAdmin.from('transactions').insert({
+    bee_id: bee.id,
+    type:   'bought',
+    amount: amount,
+    memo:   `Minted ${amount} BLiNG! @ ${mintPrice.toFixed(4)} ⬡ · new supply: ${newSupply.toFixed(3)}`
+  });
+
+  console.log(`Minted ${amount} BLiNG! for @${bee.bee_id} · new price: ${newMintPrice}`);
+  return { success: true, new_balance: newBalance, new_mint_price: newMintPrice };
+}
+
+// ── BUY ENDPOINT — fills from order book or mints ───
+app.post('/api/buy', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { amount } = req.body;
+  if (!amount || amount < 0.001)
+    return res.status(400).json({ error: 'Minimum buy is 0.001 BLiNG!' });
+
+  const { data: bee } = await supabaseAdmin
+    .from('bees').select('*').eq('id', user.id).single();
+
+  const { data: mintData } = await supabaseAdmin
+    .from('system_state').select('value').eq('key', 'mint_price').single();
+  const mintPrice = parseFloat(mintData?.value || 1.001);
+
+  // Check for open sell orders at or below mint price
+  const { data: sellOrders } = await supabaseAdmin
+    .from('orders').select('*, bees(*)')
+    .eq('side', 'sell').eq('status', 'open')
+    .lte('price', mintPrice)
+    .order('price', { ascending: true });
+
+  let remaining = amount;
+  let filled    = 0;
+
+  // Fill from existing sell orders first (cheapest first)
+  if (sellOrders?.length > 0) {
+    for (const order of sellOrders) {
+      if (remaining <= 0) break;
+      const fillAmt = Math.min(remaining, parseFloat(order.amount));
+      const fee     = fillAmt * 0.01;
+
+      // Credit buyer
+      await supabaseAdmin.from('bees')
+        .update({ bling_balance: parseFloat(bee.bling_balance) + filled + fillAmt })
+        .eq('id', bee.id);
+
+      // Credit seller (minus 1% fee)
+      await supabaseAdmin.from('bees')
+        .update({ bling_balance: parseFloat(order.bees.bling_balance) + (fillAmt * order.price) - fee })
+        .eq('id', order.bee_id);
+
+      // Update order status
+      const newOrderAmt = parseFloat(order.amount) - fillAmt;
+      await supabaseAdmin.from('orders')
+        .update({ status: newOrderAmt <= 0 ? 'filled' : 'open', amount: newOrderAmt })
+        .eq('id', order.id);
+
+      await supabaseAdmin.from('transactions').insert([
+        { bee_id: bee.id,      type: 'bought', amount:  fillAmt, counterparty: order.bees.bee_id },
+        { bee_id: order.bee_id, type: 'sold',  amount: (fillAmt * order.price) - fee, counterparty: bee.bee_id }
+      ]);
+
+      filled    += fillAmt;
+      remaining -= fillAmt;
+    }
+  }
+
+  // Mint remaining from bonding curve
+  if (remaining > 0) {
+    const mintResult = await mintBling(bee, remaining, mintPrice);
+    if (mintResult.error) return res.status(400).json({ error: mintResult.error });
+    filled += remaining;
+  }
+
+  // Refresh bee balance
+  const { data: updatedBee } = await supabaseAdmin
+    .from('bees').select('*').eq('id', user.id).single();
+
+  res.json({ success: true, filled, new_balance: updatedBee.bling_balance, new_mint_price: mintPrice });
 });
 
 // ── SERVE UI — must be last ──────────────────────
