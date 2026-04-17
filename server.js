@@ -358,9 +358,10 @@ app.post('/api/escrow/release', async (req, res) => {
   // Time-Locked: cannot release before deadline
   if (escrow.type === 'Time-Locked' && escrow.deadline) {
     const unlockTime = new Date(escrow.deadline);
-    if (new Date() < unlockTime) {
-      const remaining = unlockTime.toLocaleString('en-US', { timeZone: 'UTC' });
-      return res.status(400).json({ error: `Time-Locked until ${remaining} UTC` });
+    const now = new Date();
+    console.log(`Time-lock check: now=${now.toISOString()} unlock=${unlockTime.toISOString()} locked=${now < unlockTime}`);
+    if (now < unlockTime) {
+      return res.status(400).json({ error: `Time-Locked until ${unlockTime.toUTCString()}` });
     }
   }
 
@@ -406,6 +407,44 @@ app.post('/api/escrow/dispute', async (req, res) => {
     .update({ status: 'disputed' }).eq('id', escrow_id);
 
   res.json({ success: true, message: 'Dispute flagged. FreedomBLiNGs will review.' });
+});
+
+// ── ESCROW — CANCEL (creator only, active only) ─────
+app.post('/api/escrow/cancel', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { escrow_id } = req.body;
+  if (!escrow_id) return res.status(400).json({ error: 'Escrow ID required' });
+
+  const { data: escrow } = await supabaseAdmin
+    .from('escrows').select('*, creator:creator_id(*)').eq('id', escrow_id).single();
+  if (!escrow) return res.status(400).json({ error: 'Escrow not found' });
+  if (escrow.creator_id !== user.id)
+    return res.status(403).json({ error: 'Only the creator can cancel' });
+  if (escrow.status !== 'active')
+    return res.status(400).json({ error: 'Escrow is not active' });
+
+  // Refund creator
+  const creator = escrow.creator;
+  await supabaseAdmin.from('bees')
+    .update({ bling_balance: parseFloat(creator.bling_balance) + parseFloat(escrow.amount) })
+    .eq('id', creator.id);
+
+  await supabaseAdmin.from('escrows')
+    .update({ status: 'cancelled' }).eq('id', escrow_id);
+
+  await supabaseAdmin.from('transactions').insert({
+    bee_id: creator.id,
+    type: 'escrow_cancelled',
+    amount: parseFloat(escrow.amount),
+    memo: 'Escrow cancelled · BLiNG! refunded'
+  });
+
+  res.json({ success: true });
 });
 
 // ── STRIPE — CREATE CHECKOUT SESSION ────────────

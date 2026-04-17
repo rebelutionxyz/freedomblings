@@ -2856,6 +2856,22 @@ async function disputeEscrow(escrow_id) {
   } catch(e) { fbToast('Dispute failed. Try again.', '✕'); }
 }
 
+async function cancelEscrow(escrow_id) {
+  if (!authToken) return;
+  try {
+    const res = await fetch(API_BASE + '/api/escrow/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ escrow_id })
+    });
+    const data = await res.json();
+    if (data.error) { fbToast(data.error, '✕'); return; }
+    fbToast('Escrow cancelled · BLiNG! refunded to your wallet ✓', '⬡');
+    loadLiveEscrows();
+    loadLiveData();
+  } catch(e) { fbToast('Cancel failed. Try again.', '✕'); }
+}
+
 async function loadLiveEscrows() {
   if (!authToken) return;
   try {
@@ -2877,7 +2893,7 @@ function renderLiveEscrows(escrows) {
     return;
   }
   container.innerHTML = active.map(e => {
-    const isCreator = e.creator?.bee_id !== currentBee?.bee_id;
+    const isCreator = e.creator?.bee_id === currentBee?.bee_id;
     const other = isCreator ? e.recipient?.bee_id : e.creator?.bee_id;
     const disputed = e.status === 'disputed';
     return `<div class="escrow-card mt-12">
@@ -2890,8 +2906,16 @@ function renderLiveEscrows(escrows) {
       </div>
       <div class="escrow-amount">${fmtBling(parseFloat(e.amount))} ⬡</div>
       <div class="escrow-actions">
-        ${!isCreator && !disputed ? `<button class="btn-release" onclick="releaseEscrow('${e.id}')">Release</button>` : '<span style="opacity:0.4;font-size:0.72rem;color:var(--text-cream-dim);">Awaiting release</span>'}
-        ${!disputed ? `<button class="btn-dispute" onclick="disputeEscrow('${e.id}')">Dispute</button>` : '<span style="color:var(--red-neg);font-size:0.72rem;">⚖ Under review</span>'}
+        ${isCreator
+          ? `<button class="btn-release" onclick="releaseEscrow('${e.id}')">Release</button>`
+          : '<span style="opacity:0.4;font-size:0.72rem;color:var(--text-cream-dim);">Awaiting release</span>'
+        }
+        ${disputed
+          ? '<span style="color:var(--red-neg);font-size:0.72rem;">⚖ Under review</span>'
+          : isCreator
+            ? `<button class="btn-dispute" onclick="cancelEscrow('${e.id}')" style="background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.25);color:var(--red-neg);">Cancel</button>`
+            : `<button class="btn-dispute" onclick="disputeEscrow('${e.id}')">Dispute</button>`
+        }
       </div>
     </div>`;
   }).join('');
