@@ -1634,7 +1634,7 @@ input, select, textarea {
             <div id="buy-usd-display" style="height:42px;display:flex;align-items:center;font-family:var(--font-mono);font-size:1.1rem;font-weight:700;color:var(--amber-deep);">$0.00</div>
           </div>
           <div style="flex-shrink:0;">
-            <button class="btn btn-gold" onclick="doBuy()" style="height:42px;white-space:nowrap;font-size:0.85rem;">⬡ Buy BLiNG!</button>
+            <button class="btn btn-gold" onclick="doBuy()" style="height:42px;white-space:nowrap;font-size:0.85rem;background:var(--amber-deep);color:var(--gold);border:2px solid var(--gold);padding:0 20px;">⬡ GET BLiNG!</button>
           </div>
         </div>
         <div style="margin-top:10px;font-size:0.76rem;color:var(--amber-mid);opacity:0.8;">
@@ -3156,12 +3156,12 @@ async function doBuy() {
       body: JSON.stringify({ bling_amount: amt })
     });
     const data = await res.json();
-    if (data.error) { fbToast(data.error, '✕'); btn.textContent = '⬡ Buy BLiNG!'; btn.disabled = false; return; }
+    if (data.error) { fbToast(data.error, '✕'); btn.textContent = '⬡ GET BLiNG!'; btn.disabled = false; return; }
     // Redirect to Stripe checkout
     window.location.href = data.url;
   } catch(e) {
     fbToast('Checkout failed. Try again.', '✕');
-    btn.textContent = '⬡ Buy BLiNG!';
+    btn.textContent = '⬡ GET BLiNG!';
     btn.disabled = false;
   }
 }
