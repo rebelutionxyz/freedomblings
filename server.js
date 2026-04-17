@@ -265,6 +265,20 @@ async function matchOrders(newOrder, bee, mintPrice) {
   }
 }
 
+// ── BEE ID SEARCH — autocomplete ────────────────────
+app.get('/api/bees/search', async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.length < 2) return res.json({ bees: [] });
+
+  const { data: bees } = await supabaseAdmin
+    .from('bees')
+    .select('bee_id')
+    .ilike('bee_id', `${q}%`)
+    .limit(5);
+
+  res.json({ bees: bees || [] });
+});
+
 // ── ESCROW — CREATE ─────────────────────────────────
 app.post('/api/escrow/create', async (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
