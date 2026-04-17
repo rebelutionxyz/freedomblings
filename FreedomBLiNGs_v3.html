@@ -1817,7 +1817,8 @@ input, select, textarea {
 
           <div class="field-group">
             <label class="field-label dark">Recipient</label>
-            <input type="text" class="input-light" id="esc-recipient" placeholder="user_handle">
+<input type="text" class="input-light" id="esc-recipient" placeholder="user_handle" autocomplete="off" oninput="searchEscrowBeeId(this.value)">
+              <div id="esc-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--cream);border:1px solid rgba(139,69,0,0.25);border-radius:var(--radius-sm);z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:180px;overflow-y:auto;"></div>
           </div>
 
           <div class="field-group">
@@ -3328,6 +3329,33 @@ async function searchBeeId(val) {
   }, 250);
 }
 
+async function searchEscrowBeeId(val) {
+  const suggestions = document.getElementById('esc-suggestions');
+  if (val.length < 2) { suggestions.style.display = 'none'; return; }
+
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/bees/search?q=${encodeURIComponent(val)}`);
+      const data = await res.json();
+      if (!data.bees || !data.bees.length) { suggestions.style.display = 'none'; return; }
+
+      suggestions.innerHTML = data.bees.map(b => `
+        <div onclick="selectEscrowBeeId('${b.bee_id}')" style="padding:10px 14px;cursor:pointer;font-size:0.86rem;color:var(--text-dark);border-bottom:1px solid rgba(139,69,0,0.1);transition:background 0.15s;"
+          onmouseover="this.style.background='rgba(139,69,0,0.06)'"
+          onmouseout="this.style.background=''"
+        >@${b.bee_id}</div>
+      `).join('');
+      suggestions.style.display = 'block';
+    } catch(e) { suggestions.style.display = 'none'; }
+  }, 250);
+}
+
+function selectEscrowBeeId(bee_id) {
+  document.getElementById('esc-recipient').value = bee_id;
+  document.getElementById('esc-suggestions').style.display = 'none';
+}
+
 function selectBeeId(bee_id) {
   document.getElementById('send-to').value = bee_id;
   document.getElementById('bee-suggestions').style.display = 'none';
@@ -3337,6 +3365,10 @@ function selectBeeId(bee_id) {
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#bee-suggestions') && e.target.id !== 'send-to') {
     const s = document.getElementById('bee-suggestions');
+    if (s) s.style.display = 'none';
+  }
+  if (!e.target.closest('#esc-suggestions') && e.target.id !== 'esc-recipient') {
+    const s = document.getElementById('esc-suggestions');
     if (s) s.style.display = 'none';
   }
 });
