@@ -1654,7 +1654,7 @@ input, select, textarea {
           <div style="display:flex; gap:10px; align-items:flex-end;">
             <div style="flex:2.2;">
               <label class="field-label dark">To</label>
-              <input type="text" class="input-light" id="send-to" placeholder="bee_id (no @ symbol)">
+              <input type="text" class="input-light" id="send-to" placeholder="user_handle">
             </div>
             <div style="flex:1.2;">
               <label class="field-label dark">Amount (BLiNG!)</label>
@@ -1815,18 +1815,18 @@ input, select, textarea {
           <div class="panel-sub dark">Conditional BLiNG! holds between Bees</div>
 
           <div class="field-group">
-            <label class="field-label dark">Recipient Bee</label>
-            <input type="text" class="input-light" id="esc-recipient" placeholder="bee_id (no @ symbol)">
+            <label class="field-label dark">Recipient</label>
+            <input type="text" class="input-light" id="esc-recipient" placeholder="user_handle">
           </div>
 
           <div class="field-group">
-            <label class="field-label dark">Amount (BLiNG!)</label>
+            <label class="field-label dark">BLiNG! Total</label>
             <input type="number" class="input-light" id="esc-amount" placeholder="0.00">
           </div>
 
           <div class="field-group">
             <label class="field-label dark">Escrow Type</label>
-            <select class="input-light" id="esc-type">
+            <select class="input-light" id="esc-type" onchange="toggleDeadline(this.value)">
               <option>Waggle Gig</option>
               <option>Gate-Triggered</option>
               <option>Milestone</option>
@@ -1840,9 +1840,9 @@ input, select, textarea {
             <input type="text" class="input-light" id="esc-condition" placeholder="Describe the release condition...">
           </div>
 
-          <div class="field-group">
-            <label class="field-label dark">Deadline (optional)</label>
-            <input type="datetime-local" class="input-light" id="esc-deadline">
+          <div class="field-group" id="esc-deadline-group" style="display:none;">
+            <label class="field-label dark">Unlock Date</label>
+            <input type="date" class="input-light" id="esc-deadline">
           </div>
 
           <div style="background: rgba(46,204,113,0.06); border: 1px solid rgba(46,204,113,0.2); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 14px;">
@@ -2796,6 +2796,17 @@ function placeOrder() {
 // ═══════════════════════════════════════════════
 // ESCROW
 // ═══════════════════════════════════════════════
+function toggleDeadline(type) {
+  const group = document.getElementById('esc-deadline-group');
+  const input = document.getElementById('esc-deadline');
+  if (type === 'Time-Locked') {
+    group.style.display = 'block';
+  } else {
+    group.style.display = 'none';
+    input.value = '';
+  }
+}
+
 async function createEscrow() {
   if (!authToken) { showAuthModal('login'); return; }
   const rec  = document.getElementById('esc-recipient').value.trim();

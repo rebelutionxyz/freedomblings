@@ -355,13 +355,13 @@ app.post('/api/escrow/release', async (req, res) => {
   if (escrow.status !== 'active')
     return res.status(400).json({ error: 'Escrow is not active' });
 
-  // Time-Locked: cannot release before deadline
+  // Time-Locked: cannot release before deadline date
   if (escrow.type === 'Time-Locked' && escrow.deadline) {
-    const unlockTime = new Date(escrow.deadline);
-    const now = new Date();
-    console.log(`Time-lock check: now=${now.toISOString()} unlock=${unlockTime.toISOString()} locked=${now < unlockTime}`);
-    if (now < unlockTime) {
-      return res.status(400).json({ error: `Time-Locked until ${unlockTime.toUTCString()}` });
+    const today = new Date().toISOString().split('T')[0];
+    const unlockDate = escrow.deadline.toString().split('T')[0];
+    console.log(`Time-lock check: today=${today} unlock=${unlockDate} locked=${today < unlockDate}`);
+    if (today < unlockDate) {
+      return res.status(400).json({ error: `Time-Locked until ${unlockDate}` });
     }
   }
 
