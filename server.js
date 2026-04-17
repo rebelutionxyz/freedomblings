@@ -462,6 +462,10 @@ app.post('/api/stripe/create-checkout', async (req, res) => {
   if (!bling_amount || bling_amount < 1)
     return res.status(400).json({ error: 'Minimum purchase is 1 BLiNG!' });
 
+  // Check purchase limits
+  const limitError = await checkPurchaseLimits(bee, bling_amount);
+  if (limitError) return res.status(400).json({ error: limitError });
+
   // BLiNG! is $1 USD each (at floor price)
   const usd_cents = Math.round(bling_amount * 100);
 
@@ -491,6 +495,89 @@ app.post('/api/stripe/create-checkout', async (req, res) => {
 
   res.json({ url: session.url });
 });
+
+// ── PURCHASE LIMITS ─────────────────────────────────
+const RANK_LIMITS = [
+  { minRank: 1,  maxRank: 4,  txMax: 1000,   dailyMax: 2500,   weeklyMax: 10000  },
+  { minRank: 5,  maxRank: 8,  txMax: 2000,   dailyMax: 5000,   weeklyMax: 20000  },
+  { minRank: 9,  maxRank: 12, txMax: 5000,   dailyMax: 12500,  weeklyMax: 50000  },
+  { minRank: 13, maxRank: 21, txMax: 10000,  dailyMax: 25000,  weeklyMax: 100000 },
+  { minRank: 22, maxRank: 29, txMax: 25000,  dailyMax: 62500,  weeklyMax: 250000 },
+  { minRank: 30, maxRank: 32, txMax: 50000,  dailyMax: 125000, weeklyMax: 500000 },
+  { minRank: 33, maxRank: 33, txMax: null,   dailyMax: null,   weeklyMax: null   },
+];
+
+const RANKS_THRESHOLDS = [
+  { n:1, thresh:0 }, { n:2, thresh:100 }, { n:3, thresh:500 }, { n:4, thresh:1500 },
+  { n:5, thresh:3000 }, { n:6, thresh:6000 }, { n:7, thresh:12000 }, { n:8, thresh:25000 },
+  { n:9, thresh:50000 }, { n:10, thresh:100000 }, { n:11, thresh:200000 }, { n:12, thresh:400000 },
+  { n:13, thresh:750000 }, { n:14, thresh:1250000 }, { n:15, thresh:2000000 }, { n:16, thresh:3000000 },
+  { n:17, thresh:4500000 }, { n:18, thresh:6500000 }, { n:19, thresh:9000000 }, { n:20, thresh:12500000 },
+  { n:21, thresh:17000000 }, { n:22, thresh:23000000 }, { n:23, thresh:30000000 }, { n:24, thresh:40000000 },
+  { n:25, thresh:52000000 }, { n:26, thresh:67000000 }, { n:27, thresh:85000000 }, { n:28, thresh:107000000 },
+  { n:29, thresh:133000000 }, { n:30, thresh:165000000 }, { n:31, thresh:200000000 }, { n:32, thresh:250000000 },
+  { n:33, thresh:500000000 },
+];
+
+function getBeeRank(blingBalance) {
+  let rank = 1;
+  for (let i = RANKS_THRESHOLDS.length - 1; i >= 0; i--) {
+    if (parseFloat(blingBalance) >= RANKS_THRESHOLDS[i].thresh) {
+      rank = RANKS_THRESHOLDS[i].n;
+      break;
+    }
+  }
+  return rank;
+}
+
+function getRankLimits(rankNum) {
+  return RANK_LIMITS.find(r => rankNum >= r.minRank && rankNum <= r.maxRank) || RANK_LIMITS[0];
+}
+
+async function checkPurchaseLimits(bee, amount) {
+  const rankNum = getBeeRank(bee.bling_balance);
+  const limits  = getRankLimits(rankNum);
+
+  // No limits for rank 33
+  if (limits.txMax === null) return null;
+
+  // Per transaction check
+  if (amount > limits.txMax)
+    return `Transaction limit is ${limits.txMax.toLocaleString()} BLiNG! for your rank`;
+
+  // Daily check — sum today's bought transactions
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+
+  const { data: dailyTxns } = await supabaseAdmin
+    .from('transactions')
+    .select('amount')
+    .eq('bee_id', bee.id)
+    .eq('type', 'bought')
+    .gte('created_at', todayStart.toISOString());
+
+  const dailyTotal = (dailyTxns || []).reduce((sum, t) => sum + parseFloat(t.amount), 0);
+  if (dailyTotal + amount > limits.dailyMax)
+    return `Daily limit is ${limits.dailyMax.toLocaleString()} BLiNG! for your rank (${(limits.dailyMax - dailyTotal).toFixed(0)} remaining today)`;
+
+  // Weekly check
+  const weekStart = new Date();
+  weekStart.setUTCDate(weekStart.getUTCDate() - weekStart.getUTCDay());
+  weekStart.setUTCHours(0, 0, 0, 0);
+
+  const { data: weeklyTxns } = await supabaseAdmin
+    .from('transactions')
+    .select('amount')
+    .eq('bee_id', bee.id)
+    .eq('type', 'bought')
+    .gte('created_at', weekStart.toISOString());
+
+  const weeklyTotal = (weeklyTxns || []).reduce((sum, t) => sum + parseFloat(t.amount), 0);
+  if (weeklyTotal + amount > limits.weeklyMax)
+    return `Weekly limit is ${limits.weeklyMax.toLocaleString()} BLiNG! for your rank (${(limits.weeklyMax - weeklyTotal).toFixed(0)} remaining this week)`;
+
+  return null;
+}
 
 // ── MINT BLiNG! FROM BONDING CURVE ─────────────────
 // Called when a buy order has no matching sell orders
