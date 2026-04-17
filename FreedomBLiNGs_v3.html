@@ -1551,7 +1551,7 @@ input, select, textarea {
 
   <div class="nav-links">
     <a href="#wallet" class="nav-link active" onclick="setActive(this)">Wallet</a>
-    <a href="#orderbook" class="nav-link" onclick="setActive(this)">Order Book</a>
+    <!-- Order Book nav hidden — Phase 3 -->
     <a href="#escrow" class="nav-link" onclick="setActive(this)">Escrow</a>
     <a href="#activity" class="nav-link" onclick="setActive(this)">Activity</a>
     <a href="#launchpad" class="nav-link" onclick="setActive(this)">Launchpad</a>
@@ -1654,7 +1654,7 @@ input, select, textarea {
           <div style="display:flex; gap:10px; align-items:flex-end;">
             <div style="flex:2.2;">
               <label class="field-label dark">To</label>
-              <input type="text" class="input-light" id="send-to" placeholder="@username or Bee ID">
+              <input type="text" class="input-light" id="send-to" placeholder="bee_id (no @ symbol)">
             </div>
             <div style="flex:1.2;">
               <label class="field-label dark">Amount (BLiNG!)</label>
@@ -1675,7 +1675,7 @@ input, select, textarea {
 </section>
 
 <!-- ═══════════════ SECTION 2 — ORDER BOOK ═══════════════ -->
-<section class="section section-amber" id="orderbook">
+<section class="section section-amber" id="orderbook" style="display:none;">
   <div class="container">
     <div class="section-header">
       <div class="section-label light">Function 6</div>
@@ -1816,7 +1816,7 @@ input, select, textarea {
 
           <div class="field-group">
             <label class="field-label dark">Recipient Bee</label>
-            <input type="text" class="input-light" id="esc-recipient" placeholder="@bee_id">
+            <input type="text" class="input-light" id="esc-recipient" placeholder="bee_id (no @ symbol)">
           </div>
 
           <div class="field-group">
@@ -1860,6 +1860,7 @@ input, select, textarea {
       <div id="escrow-active">
         <div class="panel-gold" style="background: rgba(58,26,0,0.05); border-color: rgba(139,69,0,0.2);">
           <div class="panel-title dark" style="margin-bottom:16px;">Active Escrows</div>
+          <div id="escrow-active-list"></div>
 
           <div class="escrow-card">
             <div class="escrow-card-header">
@@ -2795,21 +2796,105 @@ function placeOrder() {
 // ═══════════════════════════════════════════════
 // ESCROW
 // ═══════════════════════════════════════════════
-function createEscrow() {
-  const rec = document.getElementById('esc-recipient').value.trim();
-  const amt = parseFloat(document.getElementById('esc-amount').value) || 0;
+async function createEscrow() {
+  if (!authToken) { showAuthModal('login'); return; }
+  const rec  = document.getElementById('esc-recipient').value.trim();
+  const amt  = parseFloat(document.getElementById('esc-amount').value) || 0;
   const type = document.getElementById('esc-type').value;
   const cond = document.getElementById('esc-condition').value.trim();
+  const deadline = document.getElementById('esc-deadline').value || null;
 
   if (!rec || !amt || !cond) { fbToast('Fill in all required fields.', '⚠'); return; }
-  if (amt > fbState.bling) { fbToast('Insufficient BLiNG!', '✕'); return; }
 
-  fbState.bling -= amt;
-  fbToast(`Escrow created: ${fmt(amt)} BLiNG! held for ${rec} · ${type} · Fee: Zero ✓`, '⬡');
-  document.getElementById('esc-recipient').value = '';
-  document.getElementById('esc-amount').value = '';
-  document.getElementById('esc-condition').value = '';
-  updateBalDisplay();
+  try {
+    const res = await fetch(API_BASE + '/api/escrow/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ to_bee_id: rec, amount: amt, type, condition: cond, deadline })
+    });
+    const data = await res.json();
+    if (data.error) { fbToast(data.error, '✕'); return; }
+    fbToast(`Escrow created: ${fmtBling(amt)} BLiNG! held for @${rec} · ${type} · Fee: Zero ✓`, '⬡');
+    document.getElementById('esc-recipient').value = '';
+    document.getElementById('esc-amount').value    = '';
+    document.getElementById('esc-condition').value = '';
+    document.getElementById('esc-deadline').value  = '';
+    fbState.bling = parseFloat(data.new_balance);
+    updateBalDisplay();
+    loadLiveEscrows();
+  } catch(e) { fbToast('Escrow creation failed. Try again.', '✕'); }
+}
+
+async function releaseEscrow(escrow_id) {
+  if (!authToken) return;
+  try {
+    const res = await fetch(API_BASE + '/api/escrow/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ escrow_id })
+    });
+    const data = await res.json();
+    if (data.error) { fbToast(data.error, '✕'); return; }
+    fbToast('Escrow released! BLiNG! sent to recipient. ✓', '⬡');
+    loadLiveEscrows();
+    loadLiveData();
+  } catch(e) { fbToast('Release failed. Try again.', '✕'); }
+}
+
+async function disputeEscrow(escrow_id) {
+  if (!authToken) return;
+  try {
+    const res = await fetch(API_BASE + '/api/escrow/dispute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      body: JSON.stringify({ escrow_id })
+    });
+    const data = await res.json();
+    if (data.error) { fbToast(data.error, '✕'); return; }
+    fbToast('Dispute flagged. FreedomBLiNGs will review. ⚖', '⚖');
+    loadLiveEscrows();
+  } catch(e) { fbToast('Dispute failed. Try again.', '✕'); }
+}
+
+async function loadLiveEscrows() {
+  if (!authToken) return;
+  try {
+    const res = await fetch(API_BASE + '/api/escrow', {
+      headers: { 'Authorization': 'Bearer ' + authToken }
+    });
+    const data = await res.json();
+    if (!data.escrows) return;
+    renderLiveEscrows(data.escrows);
+  } catch(e) { console.error('Escrow load error:', e); }
+}
+
+function renderLiveEscrows(escrows) {
+  const container = document.getElementById('escrow-active-list');
+  if (!container) return;
+  const active = escrows.filter(e => e.status === 'active' || e.status === 'disputed');
+  if (!active.length) {
+    container.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-cream-dim);opacity:0.5;font-size:0.82rem;">No active escrows.</div>';
+    return;
+  }
+  container.innerHTML = active.map(e => {
+    const isCreator = e.creator?.bee_id !== currentBee?.bee_id;
+    const other = isCreator ? e.recipient?.bee_id : e.creator?.bee_id;
+    const disputed = e.status === 'disputed';
+    return `<div class="escrow-card mt-12">
+      <div class="escrow-card-header">
+        <div>
+          <div class="escrow-title">${e.condition} · @${other || '?'}</div>
+          <div class="escrow-meta">${e.type} · ${e.deadline ? 'Due ' + e.deadline : 'No deadline'}</div>
+        </div>
+        <span class="escrow-type" style="${disputed ? 'background:rgba(231,76,60,0.15);border-color:rgba(231,76,60,0.3);color:var(--red-neg);' : ''}">${disputed ? 'Disputed' : e.type}</span>
+      </div>
+      <div class="escrow-amount">${fmtBling(parseFloat(e.amount))} ⬡</div>
+      <div class="escrow-actions">
+        ${!isCreator && !disputed ? `<button class="btn-release" onclick="releaseEscrow('${e.id}')">Release</button>` : '<span style="opacity:0.4;font-size:0.72rem;color:var(--text-cream-dim);">Awaiting release</span>'}
+        ${!disputed ? `<button class="btn-dispute" onclick="disputeEscrow('${e.id}')">Dispute</button>` : '<span style="color:var(--red-neg);font-size:0.72rem;">⚖ Under review</span>'}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ═══════════════════════════════════════════════
@@ -3090,6 +3175,7 @@ async function loadLiveData() {
     }
     // Load order book
     loadLiveOrderBook();
+    loadLiveEscrows();
   } catch(e) {
     console.error('Live data error:', e);
   }

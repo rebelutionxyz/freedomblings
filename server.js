@@ -265,6 +265,140 @@ async function matchOrders(newOrder, bee, mintPrice) {
   }
 }
 
+// ── ESCROW — CREATE ─────────────────────────────────
+app.post('/api/escrow/create', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { to_bee_id, amount, type, condition, deadline } = req.body;
+  if (!to_bee_id || !amount || !type || !condition)
+    return res.status(400).json({ error: 'Recipient, amount, type and condition required' });
+  if (amount <= 0)
+    return res.status(400).json({ error: 'Amount must be greater than 0' });
+
+  const { data: creator } = await supabaseAdmin
+    .from('bees').select('*').eq('id', user.id).single();
+  if (!creator) return res.status(400).json({ error: 'Bee not found' });
+  if (parseFloat(creator.bling_balance) < amount)
+    return res.status(400).json({ error: 'Insufficient BLiNG!' });
+
+  const { data: recipient } = await supabaseAdmin
+    .from('bees').select('*').eq('bee_id', to_bee_id.toLowerCase()).single();
+  if (!recipient) return res.status(400).json({ error: 'Recipient Bee ID not found' });
+
+  // Deduct from creator immediately
+  await supabaseAdmin.from('bees')
+    .update({ bling_balance: parseFloat(creator.bling_balance) - amount })
+    .eq('id', creator.id);
+
+  // Create escrow record
+  const { data: escrow, error } = await supabaseAdmin.from('escrows').insert({
+    creator_id:   creator.id,
+    recipient_id: recipient.id,
+    amount,
+    type,
+    condition,
+    deadline: deadline || null,
+    status: 'active'
+  }).select().single();
+
+  if (error) return res.status(400).json({ error: error.message });
+
+  // Record transaction
+  await supabaseAdmin.from('transactions').insert({
+    bee_id: creator.id,
+    type: 'escrow_created',
+    amount: -amount,
+    counterparty: to_bee_id,
+    memo: `Escrow created · ${type} · ${condition}`
+  });
+
+  res.json({ success: true, escrow, new_balance: parseFloat(creator.bling_balance) - amount });
+});
+
+// ── ESCROW — GET ALL FOR USER ────────────────────
+app.get('/api/escrow', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { data: escrows } = await supabaseAdmin
+    .from('escrows')
+    .select('*, creator:creator_id(bee_id), recipient:recipient_id(bee_id)')
+    .or(`creator_id.eq.${user.id},recipient_id.eq.${user.id}`)
+    .order('created_at', { ascending: false });
+
+  res.json({ escrows: escrows || [] });
+});
+
+// ── ESCROW — RELEASE ─────────────────────────────
+app.post('/api/escrow/release', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { escrow_id } = req.body;
+  if (!escrow_id) return res.status(400).json({ error: 'Escrow ID required' });
+
+  const { data: escrow } = await supabaseAdmin
+    .from('escrows').select('*, recipient:recipient_id(*)').eq('id', escrow_id).single();
+  if (!escrow) return res.status(400).json({ error: 'Escrow not found' });
+  if (escrow.creator_id !== user.id)
+    return res.status(403).json({ error: 'Only the creator can release escrow' });
+  if (escrow.status !== 'active')
+    return res.status(400).json({ error: 'Escrow is not active' });
+
+  // Credit recipient
+  const recipient = escrow.recipient;
+  await supabaseAdmin.from('bees')
+    .update({ bling_balance: parseFloat(recipient.bling_balance) + parseFloat(escrow.amount) })
+    .eq('id', recipient.id);
+
+  // Update escrow status
+  await supabaseAdmin.from('escrows')
+    .update({ status: 'released' }).eq('id', escrow_id);
+
+  // Record transactions
+  await supabaseAdmin.from('transactions').insert([
+    { bee_id: escrow.creator_id,  type: 'escrow_released', amount: -parseFloat(escrow.amount), counterparty: recipient.bee_id, memo: 'Escrow released' },
+    { bee_id: recipient.id,       type: 'escrow_received', amount:  parseFloat(escrow.amount), counterparty: null, memo: 'Escrow received' }
+  ]);
+
+  res.json({ success: true });
+});
+
+// ── ESCROW — DISPUTE ─────────────────────────────
+app.post('/api/escrow/dispute', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { escrow_id, reason } = req.body;
+  if (!escrow_id) return res.status(400).json({ error: 'Escrow ID required' });
+
+  const { data: escrow } = await supabaseAdmin
+    .from('escrows').select('*').eq('id', escrow_id).single();
+  if (!escrow) return res.status(400).json({ error: 'Escrow not found' });
+  if (escrow.creator_id !== user.id && escrow.recipient_id !== user.id)
+    return res.status(403).json({ error: 'Not your escrow' });
+  if (escrow.status !== 'active')
+    return res.status(400).json({ error: 'Escrow is not active' });
+
+  await supabaseAdmin.from('escrows')
+    .update({ status: 'disputed' }).eq('id', escrow_id);
+
+  res.json({ success: true, message: 'Dispute flagged. FreedomBLiNGs will review.' });
+});
+
 // ── STRIPE — CREATE CHECKOUT SESSION ────────────
 app.post('/api/stripe/create-checkout', async (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
