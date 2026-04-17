@@ -355,6 +355,15 @@ app.post('/api/escrow/release', async (req, res) => {
   if (escrow.status !== 'active')
     return res.status(400).json({ error: 'Escrow is not active' });
 
+  // Time-Locked: cannot release before deadline
+  if (escrow.type === 'Time-Locked' && escrow.deadline) {
+    const unlockTime = new Date(escrow.deadline);
+    if (new Date() < unlockTime) {
+      const remaining = unlockTime.toLocaleString('en-US', { timeZone: 'UTC' });
+      return res.status(400).json({ error: `Time-Locked until ${remaining} UTC` });
+    }
+  }
+
   // Credit recipient
   const recipient = escrow.recipient;
   await supabaseAdmin.from('bees')
